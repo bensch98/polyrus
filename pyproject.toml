@@ -6,45 +6,46 @@ build-backend = 'setuptools.build_meta'
 name = 'polyrus'
 dynamic = ['version']
 authors = [{ name = 'Benedikt Scheffler', email = 'scheffler.benedikt@googlemail.com' }]
-readme = 'README.md'
-description = 'Geometric library for deep learning on 3D data structures'
-license = { file = 'LICENSE' }
+readme = "README.md"
+description = "Geometric library for deep learning on 3D data structures"
+license = { file = "LICENSE" }
 classifiers = [
-    'License :: OSI Approved :: MIT License',
-    'Topic :: Scientific/Engineering',
-    'Topic :: Scientific/Engineering :: Artificial Intelligence',
-    'Programming Language :: Python :: 3',
-    'Programming Language :: Python :: 3.8',
-    'Programming Language :: Python :: 3.9',
-    'Programming Language :: Python :: 3.10',
-    'Programming Language :: Python :: 3.11',
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
 ]
 requires-python = '>= 3.8'
 dependencies = [
-    'numpy',
-    'open3d',
+    "numpy",
+    "open3d",
+    "distinctipy",
 ]
 
 [project.optional-dependencies]
 dev = [
-    'sphinx',
-    'ruff',
+    "sphinx",
+    "ruff",
 ]
 
 [project.urls]
-homepage = 'https://github.com/bensch98/polyrus'
-documentation = 'https://polyrus.github.io/'
-repository = 'https://github.com/bensch98/polyrus'
+homepage = "https://github.com/bensch98/polyrus"
+documentation = "https://polyrus.github.io/"
+repository = "https://github.com/bensch98/polyrus"
 
 [tool.setuptools.dynamic]
-version = { attr = 'polyrus.__version__' }
+version = { attr = "polyrus.__version__" }
 
 [tool.setuptools.packages.find]
-include = ['polyrus', 'polyrus.*']
+include = ["polyrus", "polyrus.*"]
 
 # [tool.flake8]
-# application_import_names = 'polyrus'
-# docstring-convention = 'numpy'
+# application_import_names = "polyrus"
+# docstring-convention = "numpy"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

@@ -1,13 +1,21 @@
-from collections.abc import Callable
 import copy
+from enum import Enum, auto
 from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
 import open3d as o3d
+import distinctipy
 
+import polyrus
+from polyrus.utils import unpack_dict_list
 
-class TriangleMesh():
+class Geometry(Enum):
+    TRIANGLEMESH = auto()
+    LINESET = auto()
+    POINTCLOUD = auto()
+
+class TriangleMesh:
     """
     Wrapper class around open3d triangle mesh with capabilities for deep learning purposes.
 
@@ -15,10 +23,17 @@ class TriangleMesh():
     from polyrus import TriangleMesh
     ```
     """
-    def __init__(self, mesh: o3d.cuda.pybind.geometry.TriangleMesh | o3d.t.geometry.TriangleMesh = None, mask: np.ndarray = None):
+
+    def __init__(
+        self,
+        mesh: o3d.cuda.pybind.geometry.TriangleMesh
+        | o3d.t.geometry.TriangleMesh = None,
+        mask: np.ndarray = None,
+    ):
         self.mesh = mesh
         self.mask = mask
         self.vertices, self.faces, self.edges = self.numpy()
+        self.ls = self.to(self.mesh, Geometry.LINESET)
 
     def _edges(self, faces: np.ndarray):
         """
@@ -28,11 +43,13 @@ class TriangleMesh():
         Returns:
             np.array: Edges of the triangle mesh, shape (n_edges, 2)
         """
-        edges = np.hstack([
-            faces[:, [0, 1]],
-            faces[:, [1, 2]],
-            faces[:, [2, 0]],
-        ]).reshape(-1, 2)
+        edges = np.hstack(
+            [
+                faces[:, [0, 1]],
+                faces[:, [1, 2]],
+                faces[:, [2, 0]],
+            ]
+        ).reshape(-1, 2)
         edges = np.sort(edges, axis=1)
         return edges
 
@@ -42,12 +59,22 @@ class TriangleMesh():
         edges = np.unique(self._edges(faces), axis=0)
         return vertices, faces, edges
 
-    def n_vfe():
+    def n_vfe(self):
         return len(self.vertices), len(self.faces), len(self.edges)
+
+    def to(self, mesh, geometry: Geometry):
+        if geometry == geometry.LINESET:
+            return o3d.cuda.pybind.geometry.LineSet().create_from_triangle_mesh(mesh)
+        elif geometry == geometry.POINTCLOUD:
+            pc = o3d.geometry.PointCloud()
+            pc.points = mesh.vertices
+            return pc
+        else:
+            raise ValueError(f"Geometry conversion not implemented for type: {geometry.name}")
 
     def euler_characteristic(self):
         return self.vertices.shape[0] - self.edges.shape[0] + self.faces.shape[0]
-    
+
     def boundary_edges(self, return_counts: bool = False) -> np.ndarray:
         """
         Finds the boundary edges from the given faces of a mesh.
@@ -59,7 +86,9 @@ class TriangleMesh():
             np.array: Boundary edges, shape(n_boundary_edges, 2)
             int (optional): Number of boundary edges, n_boundary_edges
         """
-        unique_edges, counts = np.unique(self._edges(self.faces), axis=0, return_counts=True)
+        unique_edges, counts = np.unique(
+            self._edges(self.faces), axis=0, return_counts=True
+        )
         boundary_edges = unique_edges[counts == 1]
         if return_counts:
             return boundary_edges, len(boundary_edges)
@@ -92,13 +121,17 @@ class TriangleMesh():
             np.ndarray: Boundary faces, shape(n_boundary_faces, 2)
             int (optional): Number of boundary faces, n_boundary_faces
         """
-        edges = np.vstack([
-            self.faces[:, [0, 1]],
-            self.faces[:, [1, 2]],
-            self.faces[:, [2, 0]],
-        ])
+        edges = np.vstack(
+            [
+                self.faces[:, [0, 1]],
+                self.faces[:, [1, 2]],
+                self.faces[:, [2, 0]],
+            ]
+        )
         edges = np.sort(edges, axis=1)
-        unique_edges, indices, counts = np.unique(edges, return_inverse=True, return_counts=True, axis=0)
+        unique_edges, indices, counts = np.unique(
+            edges, return_inverse=True, return_counts=True, axis=0
+        )
         boundary_edge_mask = counts[indices] == 1
         is_boundary_face = boundary_edge_mask.reshape(-1, 3).any(axis=1)
         boundary_face_indices = np.nonzero(is_boundary_face)[0]
@@ -115,9 +148,11 @@ class TriangleMesh():
         """
         self.mask = np.loadtxt(fname, dtype=np.uint8)
         if self.mask.shape[0] != len(self.vertices):
-            raise ValueError(f"The loaded mask dimensions ({self.mask.shape}) do not match the number of vertices ({len(self.vertices)})")
+            raise ValueError(
+                f"The loaded mask dimensions ({self.mask.shape}) do not match the number of vertices ({len(self.vertices)})"
+            )
         return self.mask
-        
+
     @staticmethod
     def _eliminate_borders(faces, y):
         # TODO: efficient rewrite required
@@ -132,11 +167,13 @@ class TriangleMesh():
                     break
         lbl_update_indices = np.unique(np.array(lbl_update_indices))
         return lbl_update_indices
-                    
+
     def crop_mask(self, mask: NDArray[np.uint8], filter_threshold: int = -float("inf")):
         # TODO: efficient rewrite required
         if mask.ndim != 1:
-            raise ValueError(f"Expected mask to be a 1-dimensional array, got {mask.shape}")
+            raise ValueError(
+                f"Expected mask to be a 1-dimensional array, got {mask.shape}"
+            )
         n_classes = len(np.unique(mask))
         compfeatures = {k: [] for k in range(n_classes)}
         # TODO: validate mask before
@@ -160,14 +197,55 @@ class TriangleMesh():
                 featmesh = featmesh.remove_unreferenced_vertices()
                 compfeatures[i].append(featmesh)
         # filter based on vertices
-        compfeatures = {key: [mesh for mesh in meshes if len(mesh.vertices) > filter_threshold] for key, meshes in compfeatures.items()}
+        compfeatures = {
+            key: [mesh for mesh in meshes if len(mesh.vertices) > filter_threshold]
+            for key, meshes in compfeatures.items()
+        }
         return compfeatures
 
-    def show(self, mask: NDArray[np.uint8] = None) -> None:
+    def show(self):
+        o3d.visualization.draw_geometries([self.mesh])
+    
+    def show_segmentation(
+        self,
+        compfeatures,
+        mask: NDArray[np.uint8] = None,
+        colors=None,
+    ) -> None:
         # TODO:
-        # - auto coloring
         # - instance coloring
         # - visualize all submeshes (results from crop_mask)
         if not mask:
             mask = self.mask
-        o3d.visualization.draw_geometries([self.mesh])
+        if not colors:
+            colors = distinctipy.get_colors(len(np.unique(mask)))
+        compfeatures = {
+            k: [mesh.paint_uniform_color(colors[k]) for mesh in meshes] for k, meshes in compfeatures.items()
+        }
+        o3d.visualization.draw_geometries(unpack_dict_list(compfeatures))
+    
+    def show_instance_segmentation(self, compfeatures, mask=None, colors=None):
+        if not mask:
+            mask = self.mask
+        if not colors:
+            colors = distinctipy.get_colors(len(np.unique(mask)))
+        lbl_update_indices = TriangleMesh._eliminate_borders(self.faces, mask)
+        mask2 = np.copy(self.mask)
+        mask2[lbl_update_indices] = 0
+        n_classes = len(np.unique(mask))
+        instances = {i: 0 for i in range(n_classes)}
+        instances[0] = 1
+        linesets = []
+        for i in range(0, n_classes):
+            mesh = copy.deepcopy(self.mesh)
+            if i == 0:
+                class_indices = np.nonzero(mask2 != i)[0]
+            else:
+                class_indices = np.nonzero(self.mask != i)[0]
+            mesh.remove_vertices_by_index(class_indices.tolist())
+            vec = self.vertices[class_indices]
+            ls = self.to(mesh, Geometry.LINESET)
+            ls.paint_uniform_color(colors[i])
+            linesets.append(ls)
+            o3d.visualization.draw_geometries([ls])
+        return linesets
