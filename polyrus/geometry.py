@@ -10,10 +10,12 @@ import distinctipy
 import polyrus
 from polyrus.utils import unpack_dict_list
 
+
 class Geometry(Enum):
     TRIANGLEMESH = auto()
     LINESET = auto()
     POINTCLOUD = auto()
+
 
 class TriangleMesh:
     """
@@ -70,7 +72,9 @@ class TriangleMesh:
             pc.points = mesh.vertices
             return pc
         else:
-            raise ValueError(f"Geometry conversion not implemented for type: {geometry.name}")
+            raise ValueError(
+                f"Geometry conversion not implemented for type: {geometry.name}"
+            )
 
     def euler_characteristic(self):
         return self.vertices.shape[0] - self.edges.shape[0] + self.faces.shape[0]
@@ -154,19 +158,26 @@ class TriangleMesh:
         return self.mask
 
     @staticmethod
-    def _eliminate_borders(faces, y):
-        # TODO: efficient rewrite required
-        lbl_update_indices = []
-        for face in faces:
-            lbl = -1
-            for i, v in enumerate(face):
-                if i == 0:
-                    lbl = y[v]
-                elif y[v] != lbl:
-                    [lbl_update_indices.append(x) for x in face]
-                    break
-        lbl_update_indices = np.unique(np.array(lbl_update_indices))
-        return lbl_update_indices
+    def _eliminate_borders(faces: NDArray, y):
+        ## TODO: efficient rewrite required
+        #lbl_update_indices = []
+        #for face in faces:
+        #    lbl = -1
+        #    for i, v in enumerate(face):
+        #        if i == 0:
+        #            lbl = y[v]
+        #        elif y[v] != lbl:
+        #            [lbl_update_indices.append(x) for x in face]
+        #            break
+        #lbl_update_indices = np.unique(np.array(lbl_update_indices))
+        #return lbl_update_indices
+        faces = np.array(faces)
+        first_labels = y[faces[:, 0]]
+        consistent_labels = y[faces] == first_labels[:, None]
+        inconsistent_faces = np.any(~consistent_labels, axis=1)
+        inconsistent_face_indices = faces[inconsistent_faces]
+        unique_inconsistent_indices = np.unique(inconsistent_face_indices)
+        return unique_inconsistent_indices
 
     def crop_mask(self, mask: NDArray[np.uint8], filter_threshold: int = -float("inf")):
         # TODO: efficient rewrite required
@@ -205,7 +216,7 @@ class TriangleMesh:
 
     def show(self):
         o3d.visualization.draw_geometries([self.mesh])
-    
+
     def show_segmentation(
         self,
         compfeatures,
@@ -220,11 +231,16 @@ class TriangleMesh:
         if not colors:
             colors = distinctipy.get_colors(len(np.unique(mask)))
         compfeatures = {
-            k: [mesh.paint_uniform_color(colors[k]) for mesh in meshes] for k, meshes in compfeatures.items()
+            k: [mesh.paint_uniform_color(colors[k]) for mesh in meshes]
+            for k, meshes in compfeatures.items()
         }
         o3d.visualization.draw_geometries(unpack_dict_list(compfeatures))
-    
+
     def show_instance_segmentation(self, compfeatures, mask=None, colors=None):
+        def vec_translate(x, d):
+            return np.vectorize(d.__getitem__)(x)
+
+        # get_seg
         if not mask:
             mask = self.mask
         if not colors:
@@ -237,15 +253,53 @@ class TriangleMesh:
         instances[0] = 1
         linesets = []
         for i in range(0, n_classes):
-            mesh = copy.deepcopy(self.mesh)
+            tmesh = copy.deepcopy(self.mesh)
             if i == 0:
                 class_indices = np.nonzero(mask2 != i)[0]
             else:
                 class_indices = np.nonzero(self.mask != i)[0]
-            mesh.remove_vertices_by_index(class_indices.tolist())
-            vec = self.vertices[class_indices]
-            ls = self.to(mesh, Geometry.LINESET)
-            ls.paint_uniform_color(colors[i])
-            linesets.append(ls)
-            o3d.visualization.draw_geometries([ls])
+            tmesh.remove_vertices_by_index(class_indices.tolist())
+            verts = self.vertices[class_indices]
+
+            if i > 0:
+                # split segmentation into connected instances
+                # get_vectors
+                fs = []
+                mesh = o3d.cuda.pybind.geometry.TriangleMesh()
+                faces = np.asarray(tmesh.triangles, dtype=np.int32)
+                for face in faces:
+                    if np.all(np.isin(face, class_indices)):
+                        fs.append(face)
+                if not fs:
+                    continue
+                faces_cpy = self.faces.flatten()
+                faces_ids = {old_id: new_id for new_id, old_id in enumerate(np.sort(np.unique(faces_cpy)))}
+
+                if faces.size != 0:
+                    faces = vec_translate(faces, faces_ids)
+                    mesh.triangles = o3d.cuda.pybind.utility.Vector3iVector(faces)
+                    mesh.vertices = o3d.cuda.pybind.utility.Vector3dVector(verts)
+                    threshold = 20
+
+                    face_idx, faces_per_cluster, _ = mesh.cluster_connected_triangles() # filter instances if threshold > faces_per_cluster[i]
+                    filtered = [i for i, j in enumerate(faces_per_cluster) if j > threshold]
+                    instance_mask = np.in1d(face_idx, filtered)
+                    face_idx = np.asarray(face_idx, dtype=np.int32)[instance_mask]
+                    masked_faces = faces[instance_mask]
+
+                    ls = self.to(mesh, Geometry.LINESET)
+                    ls.paint_uniform_color(colors[i])
+                    linesets.append(ls)
+                    o3d.visualization.draw_geometries([ls])
         return linesets
+
+
+if __name__ == "__main__":
+    tmesh = TriangleMesh(o3d.io.read_triangle_mesh("test/2900326.off"))
+    tmesh.mask = tmesh.segmentation_mask("test/2900326_label.txt")
+    compfeatures = tmesh.crop_mask(tmesh.mask)
+    tmesh.show_segmentation(compfeatures, colors=polyrus.COLORS_NORMAL)
+    #linesets = tmesh.show_instance_segmentation(
+    #    compfeatures, colors=polyrus.COLORS_NORMAL
+    #)
+    #o3d.visualization.draw_geometries(linesets)
