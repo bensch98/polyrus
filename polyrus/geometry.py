@@ -183,41 +183,35 @@ class TriangleMesh:
     def crop(
         self, mask: NDArray[np.uint8], filter_threshold: int = -float("inf")
     ) -> tuple[dict[int, list[o3d.cuda.pybind.geometry]], np.ndarray]:
-        # TODO: efficient rewrite required
         if mask.ndim != 1:
             raise ValueError(
                 f"Expected mask to be a 1-dimensional array, got {mask.shape}"
             )
-        n_classes = len(np.unique(mask))
+        elif len(mask) != len(self.vertices):
+            raise ValueError(
+                f"Mask length ({len(mask)}) does not match the number of vertices ({len(self.vertices)})" 
+            )
+        n_classes = np.max(mask)
         compfeatures = {k: [] for k in range(n_classes + 1)}
-        # TODO: validate mask before
         segmentation_boundary_indices = TriangleMesh._segmentation_boundary(
             self.faces, mask
         )
-        y2 = np.copy(mask)
 
         for i in range(n_classes, -1, -1):
             if i == 0:
-                y2[segmentation_boundary_indices] = 0
-            tmpmesh = copy.deepcopy(self.mesh)
-            class_indices = np.nonzero(y2 != i)[0]
-            tmpmesh.remove_vertices_by_index(class_indices.tolist())
-            segmesh = self.mesh.select_by_index(np.where(y2 == i)[0])
-            segmesh.compute_vertex_normals()
-            clidxi, nfacesi, _ = segmesh.cluster_connected_triangles()
-            compmask = np.asarray(clidxi)
+                mask[segmentation_boundary_indices] = 0
+            classmesh = self.mesh.select_by_index(np.where(mask == i)[0])
+            classmesh.compute_vertex_normals()
+            cluster_idxi, n_facesi, _ = classmesh.cluster_connected_triangles()
+            cluster_mask = np.asarray(cluster_idxi)
 
-            for j, _ in enumerate(nfacesi):
-                featmesh = copy.deepcopy(segmesh)
-                featmesh.compute_vertex_normals()
-                featmesh.remove_triangles_by_index(np.where(compmask != j)[0])
+            for j, n_faces in enumerate(n_facesi):
+                if not n_faces > filter_threshold:
+                    continue
+                featmesh = copy.deepcopy(classmesh)
+                featmesh.remove_triangles_by_index(np.where(cluster_mask != j)[0])
                 featmesh = featmesh.remove_unreferenced_vertices()
                 compfeatures[i].append(featmesh)
-        # filter based on vertices
-        compfeatures = {
-            key: [mesh for mesh in meshes if len(mesh.vertices) > filter_threshold]
-            for key, meshes in compfeatures.items()
-        }
         return compfeatures, segmentation_boundary_indices
 
     def show(self):
@@ -256,7 +250,7 @@ class TriangleMesh:
 if __name__ == "__main__":
     tmesh = TriangleMesh(o3d.io.read_triangle_mesh("test/2900326.off"))
     tmesh.mask = tmesh.segmentation_mask("test/2900326_label.txt")
-    compfeatures, _ = tmesh.crop(tmesh.mask)
+    compfeatures, _ = tmesh.crop(tmesh.mask, filter_threshold=100)
     tmesh.show_segmentation(compfeatures, colors=polyrus.COLORS_NORMAL, show_as=Geometry.LINESET)
     # tmesh.show_segmentation(compfeatures, rand=0.4)
     # o3d.visualization.draw_geometries([compfeatures[1][0]])
