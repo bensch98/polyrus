@@ -64,8 +64,21 @@ class TriangleMesh:
     def n_vfe(self):
         return len(self.vertices), len(self.faces), len(self.edges)
 
-    def to(self, mesh, geometry: Geometry):
-        if geometry == geometry.LINESET:
+    @staticmethod
+    def to(mesh, geometry: Geometry) -> o3d.cuda.pybind.geometry:
+        """
+        Converts triangle mesh to another geometry.
+
+        Parameters:
+            mesh (o3d.cuda.pybind.geometry.TriangleMesh): Triangle mesh to convert to another type.
+            geometry (Geometry): Output type (Geometry.TRIANGLEMESH, Geometry.LINESET, Geometry.POINTCLOUD)
+
+        Return:
+            o3d.cuda.pybind.geometry: Either a triangle mesh, lineset or point cloud
+        """
+        if geometry == geometry.TRIANGLEMESH:
+            return mesh
+        elif geometry == geometry.LINESET:
             return o3d.cuda.pybind.geometry.LineSet().create_from_triangle_mesh(mesh)
         elif geometry == geometry.POINTCLOUD:
             pc = o3d.geometry.PointCloud()
@@ -76,7 +89,7 @@ class TriangleMesh:
                 f"Geometry conversion not implemented for type: {geometry.name}"
             )
 
-    def euler_characteristic(self):
+    def euler_characteristic(self) -> int:
         return self.vertices.shape[0] - self.edges.shape[0] + self.faces.shape[0]
 
     def boundary_edges(self, return_counts: bool = False) -> np.ndarray:
@@ -158,19 +171,7 @@ class TriangleMesh:
         return self.mask
 
     @staticmethod
-    def _eliminate_borders(faces: NDArray, y):
-        ## TODO: efficient rewrite required
-        #lbl_update_indices = []
-        #for face in faces:
-        #    lbl = -1
-        #    for i, v in enumerate(face):
-        #        if i == 0:
-        #            lbl = y[v]
-        #        elif y[v] != lbl:
-        #            [lbl_update_indices.append(x) for x in face]
-        #            break
-        #lbl_update_indices = np.unique(np.array(lbl_update_indices))
-        #return lbl_update_indices
+    def _segmentation_boundary(faces: NDArray, y):
         faces = np.array(faces)
         first_labels = y[faces[:, 0]]
         consistent_labels = y[faces] == first_labels[:, None]
@@ -179,24 +180,29 @@ class TriangleMesh:
         unique_inconsistent_indices = np.unique(inconsistent_face_indices)
         return unique_inconsistent_indices
 
-    def crop_mask(self, mask: NDArray[np.uint8], filter_threshold: int = -float("inf")):
+    def crop(
+        self, mask: NDArray[np.uint8], filter_threshold: int = -float("inf")
+    ) -> tuple[dict[int, list[o3d.cuda.pybind.geometry]], np.ndarray]:
         # TODO: efficient rewrite required
         if mask.ndim != 1:
             raise ValueError(
                 f"Expected mask to be a 1-dimensional array, got {mask.shape}"
             )
         n_classes = len(np.unique(mask))
-        compfeatures = {k: [] for k in range(n_classes)}
+        compfeatures = {k: [] for k in range(n_classes + 1)}
         # TODO: validate mask before
-        lbl_update_indices = TriangleMesh._eliminate_borders(self.faces, mask)
+        segmentation_boundary_indices = TriangleMesh._segmentation_boundary(
+            self.faces, mask
+        )
         y2 = np.copy(mask)
-        y2[lbl_update_indices] = 0
 
-        for i in range(n_classes):
+        for i in range(n_classes, -1, -1):
+            if i == 0:
+                y2[segmentation_boundary_indices] = 0
             tmpmesh = copy.deepcopy(self.mesh)
             class_indices = np.nonzero(y2 != i)[0]
             tmpmesh.remove_vertices_by_index(class_indices.tolist())
-            segmesh = self.mesh.select_by_index(np.where(mask == i)[0])
+            segmesh = self.mesh.select_by_index(np.where(y2 == i)[0])
             segmesh.compute_vertex_normals()
             clidxi, nfacesi, _ = segmesh.cluster_connected_triangles()
             compmask = np.asarray(clidxi)
@@ -212,7 +218,7 @@ class TriangleMesh:
             key: [mesh for mesh in meshes if len(mesh.vertices) > filter_threshold]
             for key, meshes in compfeatures.items()
         }
-        return compfeatures
+        return compfeatures, segmentation_boundary_indices
 
     def show(self):
         o3d.visualization.draw_geometries([self.mesh])
@@ -221,85 +227,36 @@ class TriangleMesh:
         self,
         compfeatures,
         mask: NDArray[np.uint8] = None,
+        show_as: Geometry = Geometry.TRIANGLEMESH,
+        rand: float = 0,
         colors=None,
     ) -> None:
-        # TODO:
-        # - instance coloring
-        # - visualize all submeshes (results from crop_mask)
+        def randomize(color, b):
+            color = np.array(color)
+            noise = np.random.uniform(-b, b, size=color.shape)
+            return np.clip(color + noise, 0, 1)
+
         if not mask:
             mask = self.mask
         if not colors:
-            colors = distinctipy.get_colors(len(np.unique(mask)))
+            colors = distinctipy.get_colors(np.max(mask) + 1)
+
         compfeatures = {
-            k: [mesh.paint_uniform_color(colors[k]) for mesh in meshes]
-            for k, meshes in compfeatures.items()
+            k: [
+                TriangleMesh.to(g, show_as).paint_uniform_color(
+                    randomize(colors[k], rand)
+                )
+                for g in geometries
+            ]
+            for k, geometries in compfeatures.items()
         }
         o3d.visualization.draw_geometries(unpack_dict_list(compfeatures))
-
-    def show_instance_segmentation(self, compfeatures, mask=None, colors=None):
-        def vec_translate(x, d):
-            return np.vectorize(d.__getitem__)(x)
-
-        # get_seg
-        if not mask:
-            mask = self.mask
-        if not colors:
-            colors = distinctipy.get_colors(len(np.unique(mask)))
-        lbl_update_indices = TriangleMesh._eliminate_borders(self.faces, mask)
-        mask2 = np.copy(self.mask)
-        mask2[lbl_update_indices] = 0
-        n_classes = len(np.unique(mask))
-        instances = {i: 0 for i in range(n_classes)}
-        instances[0] = 1
-        linesets = []
-        for i in range(0, n_classes):
-            tmesh = copy.deepcopy(self.mesh)
-            if i == 0:
-                class_indices = np.nonzero(mask2 != i)[0]
-            else:
-                class_indices = np.nonzero(self.mask != i)[0]
-            tmesh.remove_vertices_by_index(class_indices.tolist())
-            verts = self.vertices[class_indices]
-
-            if i > 0:
-                # split segmentation into connected instances
-                # get_vectors
-                fs = []
-                mesh = o3d.cuda.pybind.geometry.TriangleMesh()
-                faces = np.asarray(tmesh.triangles, dtype=np.int32)
-                for face in faces:
-                    if np.all(np.isin(face, class_indices)):
-                        fs.append(face)
-                if not fs:
-                    continue
-                faces_cpy = self.faces.flatten()
-                faces_ids = {old_id: new_id for new_id, old_id in enumerate(np.sort(np.unique(faces_cpy)))}
-
-                if faces.size != 0:
-                    faces = vec_translate(faces, faces_ids)
-                    mesh.triangles = o3d.cuda.pybind.utility.Vector3iVector(faces)
-                    mesh.vertices = o3d.cuda.pybind.utility.Vector3dVector(verts)
-                    threshold = 20
-
-                    face_idx, faces_per_cluster, _ = mesh.cluster_connected_triangles() # filter instances if threshold > faces_per_cluster[i]
-                    filtered = [i for i, j in enumerate(faces_per_cluster) if j > threshold]
-                    instance_mask = np.in1d(face_idx, filtered)
-                    face_idx = np.asarray(face_idx, dtype=np.int32)[instance_mask]
-                    masked_faces = faces[instance_mask]
-
-                    ls = self.to(mesh, Geometry.LINESET)
-                    ls.paint_uniform_color(colors[i])
-                    linesets.append(ls)
-                    o3d.visualization.draw_geometries([ls])
-        return linesets
 
 
 if __name__ == "__main__":
     tmesh = TriangleMesh(o3d.io.read_triangle_mesh("test/2900326.off"))
     tmesh.mask = tmesh.segmentation_mask("test/2900326_label.txt")
-    compfeatures = tmesh.crop_mask(tmesh.mask)
-    tmesh.show_segmentation(compfeatures, colors=polyrus.COLORS_NORMAL)
-    #linesets = tmesh.show_instance_segmentation(
-    #    compfeatures, colors=polyrus.COLORS_NORMAL
-    #)
-    #o3d.visualization.draw_geometries(linesets)
+    compfeatures, _ = tmesh.crop(tmesh.mask)
+    tmesh.show_segmentation(compfeatures, colors=polyrus.COLORS_NORMAL, show_as=Geometry.LINESET)
+    # tmesh.show_segmentation(compfeatures, rand=0.4)
+    # o3d.visualization.draw_geometries([compfeatures[1][0]])
