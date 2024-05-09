@@ -33,9 +33,32 @@ class TriangleMesh:
         mask: np.ndarray = None,
     ):
         self.mesh = mesh
+        self.feature_meshes = None
         self.mask = mask
         self.vertices, self.faces, self.edges = self.numpy()
         self.ls = self.to(self.mesh, Geometry.LINESET)
+    
+    def __getitem__(self, idx):
+        return self.feature_meshes[idx]
+    
+    def __str__(self):
+        v, f, e = self.n_vfe()
+        return f"TriangleMesh: {v} vertices, {f} faces, {e} edges"
+    
+    def __repr__(self):
+        return self.__str__()
+    
+    def __iter__(self):
+        self._index = 0
+        return self
+    
+    def __next__(self):
+        if self._index < len(self.feature_meshes):
+            result = self.feature_meshes[self._index]
+            self._index += 1
+            return result
+        else:
+            raise StopIteration
 
     def _edges(self, faces: np.ndarray):
         """
@@ -197,6 +220,7 @@ class TriangleMesh:
             self.faces, mask
         )
 
+        # TODO: probably possible in an easier way
         for i in range(n_classes, -1, -1):
             if i == 0:
                 mask[segmentation_boundary_indices] = 0
@@ -211,11 +235,15 @@ class TriangleMesh:
                 featmesh = copy.deepcopy(classmesh)
                 featmesh.remove_triangles_by_index(np.where(cluster_mask != j)[0])
                 featmesh = featmesh.remove_unreferenced_vertices()
-                compfeatures[i].append(featmesh)
+                compfeatures[i].append(TriangleMesh(featmesh))
         return compfeatures, segmentation_boundary_indices
 
-    def show(self):
-        o3d.visualization.draw_geometries([self.mesh])
+    def show(self, idx=None) -> None:
+        if not idx:
+            o3d.visualization.draw_geometries([self.mesh])
+        else:
+            o3d.visualization.draw_geometries([tm.mesh for tm in self[idx]])
+    
 
     def show_segmentation(
         self,
@@ -251,6 +279,11 @@ if __name__ == "__main__":
     tmesh = TriangleMesh(o3d.io.read_triangle_mesh("test/2900326.off"))
     tmesh.mask = tmesh.segmentation_mask("test/2900326_label.txt")
     compfeatures, _ = tmesh.crop(tmesh.mask, filter_threshold=100)
-    tmesh.show_segmentation(compfeatures, colors=polyrus.COLORS_NORMAL, show_as=Geometry.LINESET)
-    # tmesh.show_segmentation(compfeatures, rand=0.4)
-    # o3d.visualization.draw_geometries([compfeatures[1][0]])
+    tmesh.feature_meshes = compfeatures
+    tmesh.show(1)
+
+    # TODO:
+    # - [x] dunder methods
+    # - [ ] shifting plane -> this prepares dataset for keypoints
+    # - [ ] pcd sampling
+    # - [ ] save point cloud 
