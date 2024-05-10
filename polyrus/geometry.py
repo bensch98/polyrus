@@ -7,8 +7,14 @@ from numpy.typing import NDArray
 import open3d as o3d
 import distinctipy
 
-import polyrus
-from polyrus.utils import unpack_dict_list, fit_plane, fit_line, ray_triangle_intersection, point_to_pcd_distance, plane_line_intersection
+from polyrus.utils import (
+    unpack_dict_list,
+    fit_plane,
+    fit_line,
+    ray_triangle_intersection,
+    point_to_pcd_distance,
+    plane_line_intersection,
+)
 
 
 class Geometry(Enum):
@@ -38,21 +44,21 @@ class TriangleMesh:
         self.mask = mask
         self.vertices, self.faces, self.edges = self.numpy()
         self.ls = self.to(self.mesh, Geometry.LINESET)
-    
+
     def __getitem__(self, idx):
         return self.feature_meshes[idx]
-    
+
     def __str__(self):
         v, f, e = self.n_vfe()
         return f"TriangleMesh: {v} vertices, {f} faces, {e} edges"
-    
+
     def __repr__(self):
         return self.__str__()
-    
+
     def __iter__(self):
         self._index = 0
         return self
-    
+
     def __next__(self):
         if self._index < len(self.feature_meshes):
             result = self.feature_meshes[self._index]
@@ -213,7 +219,7 @@ class TriangleMesh:
             )
         elif len(mask) != len(self.vertices):
             raise ValueError(
-                f"Mask length ({len(mask)}) does not match the number of vertices ({len(self.vertices)})" 
+                f"Mask length ({len(mask)}) does not match the number of vertices ({len(self.vertices)})"
             )
         n_classes = np.max(mask)
         compfeatures = {k: [] for k in range(n_classes + 1)}
@@ -273,7 +279,7 @@ class TriangleMesh:
             for k, geometries in compfeatures.items()
         }
         o3d.visualization.draw_geometries(unpack_dict_list(compfeatures))
-    
+
     def intersect_plane(self, n: np.ndarray, p: np.ndarray) -> np.ndarray:
         """
         Args:
@@ -291,22 +297,22 @@ class TriangleMesh:
                 intersections.append(point)
         intersections = np.array(intersections)
         return intersections
-    
+
     def intersect_line(self, v: np.ndarray, t: np.ndarray) -> np.ndarray:
         intersections = []
         for j in [1, -1]:
             for i in range(len(self.faces)):
                 triangle = self.vertices[self.faces[i]]
-                intersection = ray_triangle_intersection(v*j, t, triangle)
+                intersection = ray_triangle_intersection(v * j, t, triangle)
                 if len(intersection) != 0:
                     intersections.append(intersection)
         return np.array(intersections)
-    
-    def farthest_vertex_from_plane(self, n:np.ndarray, d:int) -> np.ndarray:
+
+    def farthest_vertex_from_plane(self, n: np.ndarray, d: int) -> np.ndarray:
         distances = np.dot(self.vertices, n) + d
         return self.vertices[np.argmax(np.abs(distances))]
-    
-    def shifting_plane(self, steps:int=10) -> np.ndarray:
+
+    def shifting_plane(self, steps: int = 10) -> np.ndarray:
         def filter(x: np.ndarray):
             l2 = np.linalg.norm(x - x.mean(axis=0), axis=1)
             return x[l2 <= np.median(l2)]
@@ -315,7 +321,7 @@ class TriangleMesh:
         n, d, p0 = fit_plane(boundary_vertices)
         p1 = self.farthest_vertex_from_plane(n, d)
         t_values = np.linspace(0, 1, steps)
-        points = np.array([(1-t)*p0 + t*p1 for t in t_values])
+        points = np.array([(1 - t) * p0 + t * p1 for t in t_values])
         geometric_mediani = []
         for point in points:
             intersections = self.intersect_plane(n, point)
@@ -328,11 +334,18 @@ class TriangleMesh:
         distances = point_to_pcd_distance(cip, intersections)
         cep = intersections[np.argmax(np.abs(distances))]
         return cip, cep
-    
-    def spherical_boundary_score(self, n:np.ndarray, p:np.ndarray, cip:np.ndarray, cep:np.ndarray, steps:int=10) -> float:
+
+    def spherical_boundary_score(
+        self,
+        n: np.ndarray,
+        p: np.ndarray,
+        cip: np.ndarray,
+        cep: np.ndarray,
+        steps: int = 10,
+    ) -> float:
         radii = 0
         t_values = np.linspace(0, 1, steps)
-        line = np.array([(1-t)*cip + t*cep for t in t_values])
+        line = np.array([(1 - t) * cip + t * cep for t in t_values])
         for p in line:
             intersections = self.intersect(n, p)
             if np.array_equal(intersections, np.array([])):
@@ -341,6 +354,8 @@ class TriangleMesh:
             radii += distances[np.argmin(distances)]
         return radii / steps
 
+
 # TODO:
 # - [ ] pcd sampling
-# - [ ] save point cloud 
+# - [ ] save point cloud
+# - [ ] add docs
