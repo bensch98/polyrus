@@ -8,7 +8,7 @@ import open3d as o3d
 import distinctipy
 
 import polyrus
-from polyrus.utils import unpack_dict_list
+from polyrus.utils import unpack_dict_list, fit_plane, fit_line, ray_triangle_intersection, point_to_pcd_distance, plane_line_intersection
 
 
 class Geometry(Enum):
@@ -33,6 +33,7 @@ class TriangleMesh:
         mask: np.ndarray = None,
     ):
         self.mesh = mesh
+        self.mesh.compute_vertex_normals()
         self.feature_meshes = None
         self.mask = mask
         self.vertices, self.faces, self.edges = self.numpy()
@@ -238,12 +239,11 @@ class TriangleMesh:
                 compfeatures[i].append(TriangleMesh(featmesh))
         return compfeatures, segmentation_boundary_indices
 
-    def show(self, idx=None) -> None:
+    def show(self, idx=None, misc: list = []) -> None:
         if not idx:
-            o3d.visualization.draw_geometries([self.mesh])
+            o3d.visualization.draw_geometries([self.mesh] + misc)
         else:
-            o3d.visualization.draw_geometries([tm.mesh for tm in self[idx]])
-    
+            o3d.visualization.draw_geometries([tm.mesh for tm in self[idx]] + misc)
 
     def show_segmentation(
         self,
@@ -273,17 +273,74 @@ class TriangleMesh:
             for k, geometries in compfeatures.items()
         }
         o3d.visualization.draw_geometries(unpack_dict_list(compfeatures))
+    
+    def intersect_plane(self, n: np.ndarray, p: np.ndarray) -> np.ndarray:
+        """
+        Args:
+            n: normal
+            p: point
+        """
+        distances = np.dot(self.vertices - p, n)
+        intersections = []
+        for e0, e1 in self.edges:
+            d0, d1 = distances[[e0, e1]]
+            if d0 * d1 < 0:
+                v0, v1 = self.vertices[[e0, e1]]
+                t = d0 / (d0 - d1)
+                point = v0 + t * (v1 - v0)
+                intersections.append(point)
+        intersections = np.array(intersections)
+        return intersections
+    
+    def intersect_line(self, v: np.ndarray, t: np.ndarray) -> np.ndarray:
+        intersections = []
+        for j in [1, -1]:
+            for i in range(len(self.faces)):
+                triangle = self.vertices[self.faces[i]]
+                intersection = ray_triangle_intersection(v*j, t, triangle)
+                if len(intersection) != 0:
+                    intersections.append(intersection)
+        return np.array(intersections)
+    
+    def farthest_vertex_from_plane(self, n:np.ndarray, d:int) -> np.ndarray:
+        distances = np.dot(self.vertices, n) + d
+        return self.vertices[np.argmax(np.abs(distances))]
+    
+    def shifting_plane(self, steps:int=10) -> np.ndarray:
+        def filter(x: np.ndarray):
+            l2 = np.linalg.norm(x - x.mean(axis=0), axis=1)
+            return x[l2 <= np.median(l2)]
 
+        boundary_vertices = self.vertices[self.boundary_vertices()]
+        n, d, p0 = fit_plane(boundary_vertices)
+        p1 = self.farthest_vertex_from_plane(n, d)
+        t_values = np.linspace(0, 1, steps)
+        points = np.array([(1-t)*p0 + t*p1 for t in t_values])
+        geometric_mediani = []
+        for point in points:
+            intersections = self.intersect_plane(n, point)
+            if len(intersections) != 0:
+                geometric_mediani.append(intersections.mean(axis=0))
+        geometric_mediani = np.array(geometric_mediani)
+        v, t = fit_line(filter(geometric_mediani))
+        cip = plane_line_intersection(n, p0, v, t)
+        intersections = self.intersect_line(v, t)
+        distances = point_to_pcd_distance(cip, intersections)
+        cep = intersections[np.argmax(np.abs(distances))]
+        return cip, cep
+    
+    def spherical_boundary_score(self, n:np.ndarray, p:np.ndarray, cip:np.ndarray, cep:np.ndarray, steps:int=10) -> float:
+        radii = 0
+        t_values = np.linspace(0, 1, steps)
+        line = np.array([(1-t)*cip + t*cep for t in t_values])
+        for p in line:
+            intersections = self.intersect(n, p)
+            if np.array_equal(intersections, np.array([])):
+                continue
+            distances = np.linalg.norm(intersections - p, axis=1)
+            radii += distances[np.argmin(distances)]
+        return radii / steps
 
-if __name__ == "__main__":
-    tmesh = TriangleMesh(o3d.io.read_triangle_mesh("test/2900326.off"))
-    tmesh.mask = tmesh.segmentation_mask("test/2900326_label.txt")
-    compfeatures, _ = tmesh.crop(tmesh.mask, filter_threshold=100)
-    tmesh.feature_meshes = compfeatures
-    tmesh.show(1)
-
-    # TODO:
-    # - [x] dunder methods
-    # - [ ] shifting plane -> this prepares dataset for keypoints
-    # - [ ] pcd sampling
-    # - [ ] save point cloud 
+# TODO:
+# - [ ] pcd sampling
+# - [ ] save point cloud 
