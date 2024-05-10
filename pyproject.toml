@@ -30,6 +30,7 @@ dependencies = [
 dev = [
     "sphinx",
     "ruff",
+    "pre-commit",
 ]
 
 [project.urls]
