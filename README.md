@@ -1,3 +1,7 @@
+<h1 align="center">
+<img src="https://raw.githubusercontent.com/bensch98/polyrus/main/docs/source/_static/img/polyrus_logo.png" width="300">
+</h1><br>
+
 # `polyrus`
 
 ## Polyrus: Utility library for geometric deep learning
